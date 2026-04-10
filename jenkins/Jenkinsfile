@@ -1,0 +1,46 @@
+pipeline {
+  agent any
+
+  environment {
+    AWS_REGION = 'us-east-1'
+    IMAGE_TAG = "${env.BUILD_NUMBER}"
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Test') {
+      steps {
+        sh 'echo Running tests'
+      }
+    }
+
+    stage('Build Images') {
+      steps {
+        sh 'echo Building Docker images'
+      }
+    }
+
+    stage('Scan Images') {
+      steps {
+        sh 'echo Running image scans'
+      }
+    }
+
+    stage('Push to ECR') {
+      steps {
+        sh 'echo Pushing images to ECR'
+      }
+    }
+
+    stage('Deploy to EKS') {
+      steps {
+        sh 'echo Deploying manifests to EKS'
+      }
+    }
+  }
+}
