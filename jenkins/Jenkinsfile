@@ -3,7 +3,9 @@ pipeline {
 
   environment {
     AWS_REGION = 'us-east-1'
+    ECR_REGISTRY = '603108265570.dkr.ecr.us-east-1.amazonaws.com'
     IMAGE_TAG = "${env.BUILD_NUMBER}"
+    EKS_CLUSTER_NAME = 'foodfast-eks'
   }
 
   stages {
@@ -13,33 +15,47 @@ pipeline {
       }
     }
 
-    stage('Test') {
-      steps {
-        sh 'echo Running tests'
-      }
-    }
-
     stage('Build Images') {
       steps {
-        sh 'echo Building Docker images'
+        sh '''
+          docker build -t $ECR_REGISTRY/frontend:$IMAGE_TAG apps/frontend
+          docker build -t $ECR_REGISTRY/restaurant-service:$IMAGE_TAG apps/restaurant-service
+          docker build -t $ECR_REGISTRY/menu-service:$IMAGE_TAG apps/menu-service
+          docker build -t $ECR_REGISTRY/order-service:$IMAGE_TAG apps/order-service
+          docker build -t $ECR_REGISTRY/notification-worker:$IMAGE_TAG apps/notification-worker
+        '''
       }
     }
 
-    stage('Scan Images') {
+    stage('Push Images') {
       steps {
-        sh 'echo Running image scans'
-      }
-    }
-
-    stage('Push to ECR') {
-      steps {
-        sh 'echo Pushing images to ECR'
+        sh '''
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+          docker push $ECR_REGISTRY/frontend:$IMAGE_TAG
+          docker push $ECR_REGISTRY/restaurant-service:$IMAGE_TAG
+          docker push $ECR_REGISTRY/menu-service:$IMAGE_TAG
+          docker push $ECR_REGISTRY/order-service:$IMAGE_TAG
+          docker push $ECR_REGISTRY/notification-worker:$IMAGE_TAG
+        '''
       }
     }
 
     stage('Deploy to EKS') {
       steps {
-        sh 'echo Deploying manifests to EKS'
+        sh '''
+          aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER_NAME
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/postgres/
+          kubectl apply -f k8s/redis/
+          kubectl apply -f k8s/rabbitmq/
+          kubectl apply -f k8s/restaurant-service/
+          kubectl apply -f k8s/menu-service/
+          kubectl apply -f k8s/order-service/
+          kubectl apply -f k8s/notification-worker/
+          kubectl apply -f k8s/frontend/
+          kubectl apply -f k8s/ingress/
+          kubectl apply -f k8s/autoscaling/
+        '''
       }
     }
   }

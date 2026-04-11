@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: restaurant-service
+  namespace: foodfast
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: restaurant-service
+  template:
+    metadata:
+      labels:
+        app: restaurant-service
+    spec:
+      containers:
+        - name: restaurant-service
+          image: 603108265570.dkr.ecr.us-east-1.amazonaws.com/restaurant-service:latest
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000

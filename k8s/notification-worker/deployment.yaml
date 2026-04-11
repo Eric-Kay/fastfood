@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-worker
+  namespace: foodfast
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification-worker
+  template:
+    metadata:
+      labels:
+        app: notification-worker
+    spec:
+      containers:
+        - name: notification-worker
+          image: 603108265570.dkr.ecr.us-east-1.amazonaws.com/notification-worker:latest
+          env:
+            - name: RABBITMQ_HOST
+              value: rabbitmq
