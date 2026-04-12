@@ -44,6 +44,15 @@ pipeline {
         git branch: 'main',
             credentialsId: 'github-ssh',
             url: "${REPO_URL}"
+
+        sh '''
+          set -eux
+          pwd
+          git branch
+          git rev-parse HEAD
+          ls -la
+          find . -maxdepth 3 -type f | sort | grep '^./k8s/' || true
+        '''
       }
     }
 
@@ -245,6 +254,15 @@ pipeline {
       steps {
         sh '''
           set -eux
+          pwd
+          ls -la
+          find . -maxdepth 3 -type f | sort
+          test -f k8s/namespace.yaml
+          test -f k8s/postgres/storageclass.yaml
+          test -f k8s/postgres/pvc.yaml
+          test -f k8s/postgres/deployment.yaml
+          test -f k8s/postgres/service.yaml
+
           kubectl apply -f k8s/namespace.yaml
 
           kubectl apply -f k8s/postgres/storageclass.yaml
