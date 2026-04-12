@@ -252,34 +252,39 @@ pipeline {
         expression { params.ACTION == 'deploy' }
       }
       steps {
-        sh '''
-          set -eux
-          pwd
-          ls -la
-          find . -maxdepth 3 -type f | sort
-          test -f k8s/namespace.yaml
-          test -f k8s/postgres/storageclass.yaml
-          test -f k8s/postgres/pvc.yaml
-          test -f k8s/postgres/deployment.yaml
-          test -f k8s/postgres/service.yaml
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          sh '''
+            set -eux
+            pwd
+            ls -la
+            find . -maxdepth 3 -type f | sort
+            test -f k8s/namespace.yaml
+            test -f k8s/postgres/storageclass.yaml
+            test -f k8s/postgres/pvc.yaml
+            test -f k8s/postgres/deployment.yaml
+            test -f k8s/postgres/service.yaml
 
-          kubectl apply -f k8s/namespace.yaml
+            kubectl apply -f k8s/namespace.yaml
 
-          kubectl apply -f k8s/postgres/storageclass.yaml
-          kubectl apply -f k8s/postgres/pvc.yaml
-          kubectl apply -f k8s/postgres/deployment.yaml
-          kubectl apply -f k8s/postgres/service.yaml
+            kubectl apply -f k8s/postgres/storageclass.yaml
+            kubectl apply -f k8s/postgres/pvc.yaml
+            kubectl apply -f k8s/postgres/deployment.yaml
+            kubectl apply -f k8s/postgres/service.yaml
 
-          kubectl apply -f k8s/redis/
-          kubectl apply -f k8s/rabbitmq/
-          kubectl apply -f k8s/restaurant-service/
-          kubectl apply -f k8s/menu-service/
-          kubectl apply -f k8s/order-service/
-          kubectl apply -f k8s/notification-worker/
-          kubectl apply -f k8s/frontend/
-          kubectl apply -f k8s/ingress/
-          kubectl apply -f k8s/autoscaling/
-        '''
+            kubectl apply -f k8s/redis/
+            kubectl apply -f k8s/rabbitmq/
+            kubectl apply -f k8s/restaurant-service/
+            kubectl apply -f k8s/menu-service/
+            kubectl apply -f k8s/order-service/
+            kubectl apply -f k8s/notification-worker/
+            kubectl apply -f k8s/frontend/
+            kubectl apply -f k8s/ingress/
+            kubectl apply -f k8s/autoscaling/
+          '''
+        }
       }
     }
 
@@ -288,15 +293,20 @@ pipeline {
         expression { params.ACTION == 'deploy' }
       }
       steps {
-        sh '''
-          set -eux
-          kubectl rollout restart deployment/frontend -n ${K8S_NAMESPACE}
-          kubectl rollout restart deployment/restaurant-service -n ${K8S_NAMESPACE}
-          kubectl rollout restart deployment/menu-service -n ${K8S_NAMESPACE}
-          kubectl rollout restart deployment/order-service -n ${K8S_NAMESPACE}
-          kubectl rollout restart deployment/notification-worker -n ${K8S_NAMESPACE}
-          kubectl rollout restart deployment/postgres -n ${K8S_NAMESPACE}
-        '''
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          sh '''
+            set -eux
+            kubectl rollout restart deployment/frontend -n ${K8S_NAMESPACE}
+            kubectl rollout restart deployment/restaurant-service -n ${K8S_NAMESPACE}
+            kubectl rollout restart deployment/menu-service -n ${K8S_NAMESPACE}
+            kubectl rollout restart deployment/order-service -n ${K8S_NAMESPACE}
+            kubectl rollout restart deployment/notification-worker -n ${K8S_NAMESPACE}
+            kubectl rollout restart deployment/postgres -n ${K8S_NAMESPACE}
+          '''
+        }
       }
     }
 
@@ -305,20 +315,25 @@ pipeline {
         expression { params.ACTION == 'deploy' }
       }
       steps {
-        sh '''
-          set -eux
-          kubectl rollout status deployment/frontend -n ${K8S_NAMESPACE} --timeout=300s
-          kubectl rollout status deployment/restaurant-service -n ${K8S_NAMESPACE} --timeout=300s
-          kubectl rollout status deployment/menu-service -n ${K8S_NAMESPACE} --timeout=300s
-          kubectl rollout status deployment/order-service -n ${K8S_NAMESPACE} --timeout=300s
-          kubectl rollout status deployment/notification-worker -n ${K8S_NAMESPACE} --timeout=300s
-          kubectl rollout status deployment/postgres -n ${K8S_NAMESPACE} --timeout=300s
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          sh '''
+            set -eux
+            kubectl rollout status deployment/frontend -n ${K8S_NAMESPACE} --timeout=300s
+            kubectl rollout status deployment/restaurant-service -n ${K8S_NAMESPACE} --timeout=300s
+            kubectl rollout status deployment/menu-service -n ${K8S_NAMESPACE} --timeout=300s
+            kubectl rollout status deployment/order-service -n ${K8S_NAMESPACE} --timeout=300s
+            kubectl rollout status deployment/notification-worker -n ${K8S_NAMESPACE} --timeout=300s
+            kubectl rollout status deployment/postgres -n ${K8S_NAMESPACE} --timeout=300s
 
-          kubectl get pods -n ${K8S_NAMESPACE}
-          kubectl get svc -n ${K8S_NAMESPACE}
-          kubectl get ingress -n ${K8S_NAMESPACE}
-          kubectl get hpa -n ${K8S_NAMESPACE}
-        '''
+            kubectl get pods -n ${K8S_NAMESPACE}
+            kubectl get svc -n ${K8S_NAMESPACE}
+            kubectl get ingress -n ${K8S_NAMESPACE}
+            kubectl get hpa -n ${K8S_NAMESPACE}
+          '''
+        }
       }
     }
 
@@ -327,21 +342,26 @@ pipeline {
         expression { params.ACTION == 'destroy' }
       }
       steps {
-        sh '''
-          set +e
-          kubectl delete -f k8s/autoscaling/ --ignore-not-found=true
-          kubectl delete -f k8s/ingress/ --ignore-not-found=true
-          kubectl delete -f k8s/frontend/ --ignore-not-found=true
-          kubectl delete -f k8s/notification-worker/ --ignore-not-found=true
-          kubectl delete -f k8s/order-service/ --ignore-not-found=true
-          kubectl delete -f k8s/menu-service/ --ignore-not-found=true
-          kubectl delete -f k8s/restaurant-service/ --ignore-not-found=true
-          kubectl delete -f k8s/rabbitmq/ --ignore-not-found=true
-          kubectl delete -f k8s/redis/ --ignore-not-found=true
-          kubectl delete -f k8s/postgres/ --ignore-not-found=true
-          kubectl delete -f k8s/namespace.yaml --ignore-not-found=true
-          exit 0
-        '''
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          sh '''
+            set +e
+            kubectl delete -f k8s/autoscaling/ --ignore-not-found=true
+            kubectl delete -f k8s/ingress/ --ignore-not-found=true
+            kubectl delete -f k8s/frontend/ --ignore-not-found=true
+            kubectl delete -f k8s/notification-worker/ --ignore-not-found=true
+            kubectl delete -f k8s/order-service/ --ignore-not-found=true
+            kubectl delete -f k8s/menu-service/ --ignore-not-found=true
+            kubectl delete -f k8s/restaurant-service/ --ignore-not-found=true
+            kubectl delete -f k8s/rabbitmq/ --ignore-not-found=true
+            kubectl delete -f k8s/redis/ --ignore-not-found=true
+            kubectl delete -f k8s/postgres/ --ignore-not-found=true
+            kubectl delete -f k8s/namespace.yaml --ignore-not-found=true
+            exit 0
+          '''
+        }
       }
     }
 
