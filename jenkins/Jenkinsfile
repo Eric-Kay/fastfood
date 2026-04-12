@@ -348,6 +348,8 @@ pipeline {
         ]) {
           sh '''
             set +e
+            aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER_NAME}
+
             kubectl delete -f k8s/autoscaling/ --ignore-not-found=true
             kubectl delete -f k8s/ingress/ --ignore-not-found=true
             kubectl delete -f k8s/frontend/ --ignore-not-found=true
@@ -359,6 +361,7 @@ pipeline {
             kubectl delete -f k8s/redis/ --ignore-not-found=true
             kubectl delete -f k8s/postgres/ --ignore-not-found=true
             kubectl delete -f k8s/namespace.yaml --ignore-not-found=true
+
             exit 0
           '''
         }
@@ -386,6 +389,24 @@ pipeline {
       }
     }
 
+    stage('Empty Backend Bucket') {
+      when {
+        expression { params.ACTION == 'destroy' }
+      }
+      steps {
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          sh '''
+            set +e
+            aws s3 rm s3://${TF_BUCKET} --recursive
+            exit 0
+          '''
+        }
+      }
+    }
+
     stage('Destroy Backend') {
       when {
         expression { params.ACTION == 'destroy' }
@@ -407,6 +428,31 @@ pipeline {
               exit 0
             '''
           }
+        }
+      }
+    }
+
+    stage('Force Delete Backend Resources If Needed') {
+      when {
+        expression { params.ACTION == 'destroy' }
+      }
+      steps {
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          sh '''
+            set +e
+
+            aws s3 rm s3://${TF_BUCKET} --recursive
+            aws s3api delete-bucket --bucket ${TF_BUCKET} --region ${AWS_REGION}
+
+            aws dynamodb delete-table \
+              --table-name ${TF_LOCK_TABLE} \
+              --region ${AWS_REGION}
+
+            exit 0
+          '''
         }
       }
     }
