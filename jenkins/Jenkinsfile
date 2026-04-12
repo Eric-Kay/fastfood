@@ -1,51 +1,257 @@
 pipeline {
   agent any
 
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '10'))
+  }
+
+  parameters {
+    choice(
+      name: 'ACTION',
+      choices: ['deploy', 'destroy'],
+      description: 'Choose whether to deploy or destroy the environment'
+    )
+  }
+
   environment {
-    AWS_REGION = 'us-east-1'
-    ECR_REGISTRY = '603108265570.dkr.ecr.us-east-1.amazonaws.com'
-    IMAGE_TAG = "${env.BUILD_NUMBER}"
+    REPO_URL         = 'git@github.com:Eric-Kay/fastfood.git'
+    AWS_REGION       = 'us-east-1'
+    AWS_ACCOUNT_ID   = '603108265570'
+    ECR_REGISTRY     = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
     EKS_CLUSTER_NAME = 'foodfast-eks'
+    K8S_NAMESPACE    = 'foodfast'
+
+    TF_BOOTSTRAP_DIR = 'infra/bootstrap/state-backend'
+    TF_ENV_DIR       = 'infra/environments/dev'
+
+    TF_BUCKET        = 'eric-foodfast-terraform-state'
+    TF_LOCK_TABLE    = 'foodfast-terraform-locks'
+    TF_ENVIRONMENT   = 'dev'
+
+    FRONTEND_IMAGE   = "${ECR_REGISTRY}/frontend"
+    RESTAURANT_IMAGE = "${ECR_REGISTRY}/restaurant-service"
+    MENU_IMAGE       = "${ECR_REGISTRY}/menu-service"
+    ORDER_IMAGE      = "${ECR_REGISTRY}/order-service"
+    WORKER_IMAGE     = "${ECR_REGISTRY}/notification-worker"
   }
 
   stages {
     stage('Checkout') {
       steps {
-        checkout scm
+        deleteDir()
+        git branch: 'main',
+            credentialsId: 'github-ssh',
+            url: "${REPO_URL}"
+      }
+    }
+
+    stage('Set Build Tag') {
+      when {
+        expression { params.ACTION == 'deploy' }
+      }
+      steps {
+        script {
+          env.SHORT_COMMIT = sh(
+            script: 'git rev-parse --short HEAD',
+            returnStdout: true
+          ).trim()
+          env.IMAGE_TAG = "${BUILD_NUMBER}-${SHORT_COMMIT}"
+        }
+      }
+    }
+
+    stage('Verify Tools') {
+      steps {
+        sh '''
+          set -eux
+          git --version
+          docker --version
+          aws --version
+          kubectl version --client
+          terraform version
+        '''
+      }
+    }
+
+    stage('Bootstrap Terraform Backend') {
+      when {
+        expression { params.ACTION == 'deploy' }
+      }
+      steps {
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          dir("${TF_BOOTSTRAP_DIR}") {
+            sh '''
+              set -eux
+              terraform init
+              terraform apply -auto-approve \
+                -var="aws_region=${AWS_REGION}" \
+                -var="bucket_name=${TF_BUCKET}" \
+                -var="dynamodb_table_name=${TF_LOCK_TABLE}" \
+                -var="environment=${TF_ENVIRONMENT}"
+            '''
+          }
+        }
+      }
+    }
+
+    stage('Provision Core Infra') {
+      when {
+        expression { params.ACTION == 'deploy' }
+      }
+      steps {
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          dir("${TF_ENV_DIR}") {
+            sh '''
+              set -eux
+              terraform init -reconfigure
+              terraform fmt -recursive
+              terraform validate
+              terraform apply \
+                -target=module.vpc \
+                -target=module.eks \
+                -target=module.ecr \
+                -auto-approve
+            '''
+          }
+        }
+      }
+    }
+
+    stage('Configure kubectl') {
+      when {
+        expression { params.ACTION == 'deploy' || params.ACTION == 'destroy' }
+      }
+      steps {
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          sh '''
+            set +e
+            aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER_NAME}
+            kubectl get nodes
+            exit 0
+          '''
+        }
+      }
+    }
+
+    stage('Provision Cluster Addons') {
+      when {
+        expression { params.ACTION == 'deploy' }
+      }
+      steps {
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          dir("${TF_ENV_DIR}") {
+            sh '''
+              set -eux
+              terraform apply -auto-approve
+            '''
+          }
+        }
       }
     }
 
     stage('Build Images') {
+      when {
+        expression { params.ACTION == 'deploy' }
+      }
       steps {
         sh '''
-          docker build -t $ECR_REGISTRY/frontend:$IMAGE_TAG apps/frontend
-          docker build -t $ECR_REGISTRY/restaurant-service:$IMAGE_TAG apps/restaurant-service
-          docker build -t $ECR_REGISTRY/menu-service:$IMAGE_TAG apps/menu-service
-          docker build -t $ECR_REGISTRY/order-service:$IMAGE_TAG apps/order-service
-          docker build -t $ECR_REGISTRY/notification-worker:$IMAGE_TAG apps/notification-worker
+          set -eux
+          docker build -t ${FRONTEND_IMAGE}:${IMAGE_TAG} apps/frontend
+          docker build -t ${RESTAURANT_IMAGE}:${IMAGE_TAG} apps/restaurant-service
+          docker build -t ${MENU_IMAGE}:${IMAGE_TAG} apps/menu-service
+          docker build -t ${ORDER_IMAGE}:${IMAGE_TAG} apps/order-service
+          docker build -t ${WORKER_IMAGE}:${IMAGE_TAG} apps/notification-worker
         '''
+      }
+    }
+
+    stage('Tag Latest') {
+      when {
+        expression { params.ACTION == 'deploy' }
+      }
+      steps {
+        sh '''
+          set -eux
+          docker tag ${FRONTEND_IMAGE}:${IMAGE_TAG} ${FRONTEND_IMAGE}:latest
+          docker tag ${RESTAURANT_IMAGE}:${IMAGE_TAG} ${RESTAURANT_IMAGE}:latest
+          docker tag ${MENU_IMAGE}:${IMAGE_TAG} ${MENU_IMAGE}:latest
+          docker tag ${ORDER_IMAGE}:${IMAGE_TAG} ${ORDER_IMAGE}:latest
+          docker tag ${WORKER_IMAGE}:${IMAGE_TAG} ${WORKER_IMAGE}:latest
+        '''
+      }
+    }
+
+    stage('Login to ECR') {
+      when {
+        expression { params.ACTION == 'deploy' }
+      }
+      steps {
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          sh '''
+            set -eux
+            aws ecr get-login-password --region ${AWS_REGION} | \
+              docker login --username AWS --password-stdin ${ECR_REGISTRY}
+          '''
+        }
       }
     }
 
     stage('Push Images') {
+      when {
+        expression { params.ACTION == 'deploy' }
+      }
       steps {
         sh '''
-          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
-          docker push $ECR_REGISTRY/frontend:$IMAGE_TAG
-          docker push $ECR_REGISTRY/restaurant-service:$IMAGE_TAG
-          docker push $ECR_REGISTRY/menu-service:$IMAGE_TAG
-          docker push $ECR_REGISTRY/order-service:$IMAGE_TAG
-          docker push $ECR_REGISTRY/notification-worker:$IMAGE_TAG
+          set -eux
+          docker push ${FRONTEND_IMAGE}:${IMAGE_TAG}
+          docker push ${FRONTEND_IMAGE}:latest
+
+          docker push ${RESTAURANT_IMAGE}:${IMAGE_TAG}
+          docker push ${RESTAURANT_IMAGE}:latest
+
+          docker push ${MENU_IMAGE}:${IMAGE_TAG}
+          docker push ${MENU_IMAGE}:latest
+
+          docker push ${ORDER_IMAGE}:${IMAGE_TAG}
+          docker push ${ORDER_IMAGE}:latest
+
+          docker push ${WORKER_IMAGE}:${IMAGE_TAG}
+          docker push ${WORKER_IMAGE}:latest
         '''
       }
     }
 
-    stage('Deploy to EKS') {
+    stage('Deploy App Manifests') {
+      when {
+        expression { params.ACTION == 'deploy' }
+      }
       steps {
         sh '''
-          aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER_NAME
+          set -eux
           kubectl apply -f k8s/namespace.yaml
-          kubectl apply -f k8s/postgres/
+
+          kubectl apply -f k8s/postgres/storageclass.yaml
+          kubectl apply -f k8s/postgres/pvc.yaml
+          kubectl apply -f k8s/postgres/deployment.yaml
+          kubectl apply -f k8s/postgres/service.yaml
+
           kubectl apply -f k8s/redis/
           kubectl apply -f k8s/rabbitmq/
           kubectl apply -f k8s/restaurant-service/
@@ -57,6 +263,127 @@ pipeline {
           kubectl apply -f k8s/autoscaling/
         '''
       }
+    }
+
+    stage('Restart App Deployments') {
+      when {
+        expression { params.ACTION == 'deploy' }
+      }
+      steps {
+        sh '''
+          set -eux
+          kubectl rollout restart deployment/frontend -n ${K8S_NAMESPACE}
+          kubectl rollout restart deployment/restaurant-service -n ${K8S_NAMESPACE}
+          kubectl rollout restart deployment/menu-service -n ${K8S_NAMESPACE}
+          kubectl rollout restart deployment/order-service -n ${K8S_NAMESPACE}
+          kubectl rollout restart deployment/notification-worker -n ${K8S_NAMESPACE}
+          kubectl rollout restart deployment/postgres -n ${K8S_NAMESPACE}
+        '''
+      }
+    }
+
+    stage('Verify Rollout') {
+      when {
+        expression { params.ACTION == 'deploy' }
+      }
+      steps {
+        sh '''
+          set -eux
+          kubectl rollout status deployment/frontend -n ${K8S_NAMESPACE} --timeout=300s
+          kubectl rollout status deployment/restaurant-service -n ${K8S_NAMESPACE} --timeout=300s
+          kubectl rollout status deployment/menu-service -n ${K8S_NAMESPACE} --timeout=300s
+          kubectl rollout status deployment/order-service -n ${K8S_NAMESPACE} --timeout=300s
+          kubectl rollout status deployment/notification-worker -n ${K8S_NAMESPACE} --timeout=300s
+          kubectl rollout status deployment/postgres -n ${K8S_NAMESPACE} --timeout=300s
+
+          kubectl get pods -n ${K8S_NAMESPACE}
+          kubectl get svc -n ${K8S_NAMESPACE}
+          kubectl get ingress -n ${K8S_NAMESPACE}
+          kubectl get hpa -n ${K8S_NAMESPACE}
+        '''
+      }
+    }
+
+    stage('Destroy App Workloads') {
+      when {
+        expression { params.ACTION == 'destroy' }
+      }
+      steps {
+        sh '''
+          set +e
+          kubectl delete -f k8s/autoscaling/ --ignore-not-found=true
+          kubectl delete -f k8s/ingress/ --ignore-not-found=true
+          kubectl delete -f k8s/frontend/ --ignore-not-found=true
+          kubectl delete -f k8s/notification-worker/ --ignore-not-found=true
+          kubectl delete -f k8s/order-service/ --ignore-not-found=true
+          kubectl delete -f k8s/menu-service/ --ignore-not-found=true
+          kubectl delete -f k8s/restaurant-service/ --ignore-not-found=true
+          kubectl delete -f k8s/rabbitmq/ --ignore-not-found=true
+          kubectl delete -f k8s/redis/ --ignore-not-found=true
+          kubectl delete -f k8s/postgres/ --ignore-not-found=true
+          kubectl delete -f k8s/namespace.yaml --ignore-not-found=true
+          exit 0
+        '''
+      }
+    }
+
+    stage('Destroy Infra') {
+      when {
+        expression { params.ACTION == 'destroy' }
+      }
+      steps {
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          dir("${TF_ENV_DIR}") {
+            sh '''
+              set +e
+              terraform init -reconfigure
+              terraform destroy -auto-approve
+              exit 0
+            '''
+          }
+        }
+      }
+    }
+
+    stage('Destroy Backend') {
+      when {
+        expression { params.ACTION == 'destroy' }
+      }
+      steps {
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          dir("${TF_BOOTSTRAP_DIR}") {
+            sh '''
+              set +e
+              terraform init
+              terraform destroy -auto-approve \
+                -var="aws_region=${AWS_REGION}" \
+                -var="bucket_name=${TF_BUCKET}" \
+                -var="dynamodb_table_name=${TF_LOCK_TABLE}" \
+                -var="environment=${TF_ENVIRONMENT}"
+              exit 0
+            '''
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      sh 'docker image prune -f || true'
+      cleanWs()
+    }
+    success {
+      echo "Pipeline completed successfully for action: ${params.ACTION}"
+    }
+    failure {
+      echo "Pipeline failed for action: ${params.ACTION}"
     }
   }
 }
