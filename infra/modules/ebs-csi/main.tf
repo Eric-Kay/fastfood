@@ -2,6 +2,26 @@ locals {
   oidc_provider_hostpath = replace(var.oidc_issuer_url, "https://", "")
 }
 
+data "aws_caller_identity" "current" {}
+
+data "tls_certificate" "eks_oidc" {
+  url = var.oidc_issuer_url
+}
+
+resource "aws_iam_openid_connect_provider" "eks" {
+  url = var.oidc_issuer_url
+
+  client_id_list = [
+    "sts.amazonaws.com"
+  ]
+
+  thumbprint_list = [
+    data.tls_certificate.eks_oidc.certificates[0].sha1_fingerprint
+  ]
+
+  tags = var.tags
+}
+
 data "aws_iam_policy_document" "ebs_csi_assume_role" {
   statement {
     effect = "Allow"
@@ -11,9 +31,9 @@ data "aws_iam_policy_document" "ebs_csi_assume_role" {
     ]
 
     principals {
-      type        = "Federated"
+      type = "Federated"
       identifiers = [
-        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${local.oidc_provider_hostpath}"
+        aws_iam_openid_connect_provider.eks.arn
       ]
     }
 
@@ -30,8 +50,6 @@ data "aws_iam_policy_document" "ebs_csi_assume_role" {
     }
   }
 }
-
-data "aws_caller_identity" "current" {}
 
 resource "aws_iam_role" "ebs_csi" {
   name               = "AmazonEKS_EBS_CSI_DriverRole_FoodFast"
@@ -53,8 +71,15 @@ resource "aws_eks_addon" "ebs_csi" {
   resolve_conflicts_on_update = "OVERWRITE"
 
   depends_on = [
+    aws_iam_openid_connect_provider.eks,
     aws_iam_role_policy_attachment.ebs_csi
   ]
 
   tags = var.tags
+
+  timeouts {
+    create = "40m"
+    update = "40m"
+    delete = "20m"
+  }
 }
