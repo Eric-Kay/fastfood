@@ -64,35 +64,47 @@ pipeline {
     }
 
     stage('Bootstrap backend if missing') {
-      when { expression { params.ACTION == 'deploy' } }
+        when { expression { params.ACTION == 'deploy' } }
 
-      steps {
-        withCredentials([
-          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
-        ]) {
+        steps {
+            withCredentials([
+            string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+            string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+            ]) {
 
-          sh '''
-          set -eux
+            sh '''
+            set -eux
 
-          if aws s3api head-bucket --bucket ${TF_BUCKET} 2>/dev/null
-          then
-            echo "backend already exists"
-          else
-            cd ${TF_BOOTSTRAP_DIR}
+            BUCKET_EXISTS=false
+            TABLE_EXISTS=false
 
-            terraform init
+            if aws s3api head-bucket --bucket ${TF_BUCKET} 2>/dev/null; then
+                BUCKET_EXISTS=true
+            fi
 
-            terraform apply -auto-approve \
-              -var="aws_region=${AWS_REGION}" \
-              -var="bucket_name=${TF_BUCKET}" \
-              -var="dynamodb_table_name=${TF_LOCK_TABLE}" \
-              -var="environment=${TF_ENV}"
-          fi
-          '''
+            if aws dynamodb describe-table \
+                --table-name ${TF_LOCK_TABLE} \
+                --region ${AWS_REGION} >/dev/null 2>&1; then
+                TABLE_EXISTS=true
+            fi
+
+            if [ "$BUCKET_EXISTS" = "true" ] && [ "$TABLE_EXISTS" = "true" ]; then
+                echo "terraform backend bucket and lock table already exist"
+            else
+                cd ${TF_BOOTSTRAP_DIR}
+
+                terraform init
+
+                terraform apply -auto-approve \
+                -var="aws_region=${AWS_REGION}" \
+                -var="bucket_name=${TF_BUCKET}" \
+                -var="dynamodb_table_name=${TF_LOCK_TABLE}" \
+                -var="environment=${TF_ENV}"
+            fi
+            '''
+            }
         }
-      }
-    }
+}
 
     stage('Create infrastructure') {
       when { expression { params.ACTION == 'deploy' } }
