@@ -123,6 +123,9 @@ pipeline {
     }
 
     stage('configure kubectl') {
+      when {
+        expression { params.ACTION == 'deploy' || params.ACTION == 'destroy' }
+      }
 
       steps {
 
@@ -146,8 +149,70 @@ pipeline {
       }
     }
 
-    stage('build images') {
+    stage('Install EBS CSI Driver') {
+      when { expression { params.ACTION == 'deploy' } }
 
+      steps {
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          sh '''
+          set +e
+
+          eksctl utils associate-iam-oidc-provider \
+            --region ${AWS_REGION} \
+            --cluster ${EKS_CLUSTER_NAME} \
+            --approve
+
+          eksctl create iamserviceaccount \
+            --name ebs-csi-controller-sa \
+            --namespace kube-system \
+            --cluster ${EKS_CLUSTER_NAME} \
+            --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
+            --approve \
+            --region ${AWS_REGION}
+
+          aws eks create-addon \
+            --cluster-name ${EKS_CLUSTER_NAME} \
+            --addon-name aws-ebs-csi-driver \
+            --region ${AWS_REGION}
+
+          kubectl get pods -n kube-system | grep -i ebs || true
+
+          exit 0
+          '''
+        }
+      }
+    }
+
+    stage('Install metrics-server') {
+      when { expression { params.ACTION == 'deploy' } }
+
+      steps {
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          sh '''
+          set +e
+
+          helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/ || true
+          helm repo update
+
+          helm upgrade --install metrics-server metrics-server/metrics-server \
+            -n kube-system \
+            --set args[0]=--kubelet-insecure-tls
+
+          kubectl get pods -n kube-system | grep metrics-server || true
+
+          exit 0
+          '''
+        }
+      }
+    }
+
+    stage('build images') {
       when { expression { params.ACTION == 'deploy' } }
 
       steps {
@@ -165,7 +230,6 @@ pipeline {
     }
 
     stage('push images') {
-
       when { expression { params.ACTION == 'deploy' } }
 
       steps {
@@ -194,7 +258,6 @@ pipeline {
     }
 
     stage('deploy k8s') {
-
       when { expression { params.ACTION == 'deploy' } }
 
       steps {
@@ -206,6 +269,16 @@ pipeline {
 
           sh '''
           set -eux
+
+          sed -i "s|${FRONTEND_IMAGE}:latest|${FRONTEND_IMAGE}:${TAG}|g" k8s/frontend/deployment.yaml
+          sed -i "s|${RESTAURANT_IMAGE}:latest|${RESTAURANT_IMAGE}:${TAG}|g" k8s/restaurant-service/deployment.yaml
+          sed -i "s|${MENU_IMAGE}:latest|${MENU_IMAGE}:${TAG}|g" k8s/menu-service/deployment.yaml
+          sed -i "s|${ORDER_IMAGE}:latest|${ORDER_IMAGE}:${TAG}|g" k8s/order-service/deployment.yaml
+          sed -i "s|${WORKER_IMAGE}:latest|${WORKER_IMAGE}:${TAG}|g" k8s/notification-worker/deployment.yaml
+
+          pwd
+          ls -la
+          find . -maxdepth 3 -type f | sort | grep '^./k8s/' || true
 
           kubectl apply -f k8s/namespace.yaml
 
@@ -227,7 +300,6 @@ pipeline {
     }
 
     stage('verify rollout') {
-
       when { expression { params.ACTION == 'deploy' } }
 
       steps {
@@ -249,13 +321,13 @@ pipeline {
           kubectl get pods -n ${K8S_NAMESPACE}
           kubectl get svc -n ${K8S_NAMESPACE}
           kubectl get pvc -n ${K8S_NAMESPACE}
+          kubectl get hpa -n ${K8S_NAMESPACE} || true
           '''
         }
       }
     }
 
     stage('destroy k8s workloads') {
-
       when { expression { params.ACTION == 'destroy' } }
 
       steps {
@@ -281,7 +353,6 @@ pipeline {
     }
 
     stage('destroy infra') {
-
       when { expression { params.ACTION == 'destroy' } }
 
       steps {
@@ -308,7 +379,6 @@ pipeline {
     }
 
     stage('delete backend') {
-
       when { expression { params.ACTION == 'destroy' } }
 
       steps {
@@ -324,10 +394,12 @@ pipeline {
           aws s3 rm s3://${TF_BUCKET} --recursive
 
           aws s3api delete-bucket \
-            --bucket ${TF_BUCKET}
+            --bucket ${TF_BUCKET} \
+            --region ${AWS_REGION}
 
           aws dynamodb delete-table \
-            --table-name ${TF_LOCK_TABLE}
+            --table-name ${TF_LOCK_TABLE} \
+            --region ${AWS_REGION}
 
           exit 0
           '''
