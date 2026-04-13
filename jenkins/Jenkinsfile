@@ -79,7 +79,6 @@ pipeline {
           then
             echo "backend already exists"
           else
-
             cd ${TF_BOOTSTRAP_DIR}
 
             terraform init
@@ -99,14 +98,12 @@ pipeline {
       when { expression { params.ACTION == 'deploy' } }
 
       steps {
-
         withCredentials([
           string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
           string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
         ]) {
 
           dir("${TF_ENV_DIR}") {
-
             sh '''
             set -eux
 
@@ -128,7 +125,6 @@ pipeline {
       }
 
       steps {
-
         withCredentials([
           string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
           string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
@@ -149,7 +145,27 @@ pipeline {
       }
     }
 
-    stage('Install EBS CSI Driver') {
+    stage('Apply cluster addons') {
+      when { expression { params.ACTION == 'deploy' } }
+
+      steps {
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          dir("${TF_ENV_DIR}") {
+            sh '''
+            set -eux
+
+            terraform init -reconfigure
+            terraform apply -auto-approve
+            '''
+          }
+        }
+      }
+    }
+
+    stage('Validate cluster addons') {
       when { expression { params.ACTION == 'deploy' } }
 
       steps {
@@ -158,29 +174,18 @@ pipeline {
           string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
         ]) {
           sh '''
-          set +e
+          set -eux
 
-          eksctl utils associate-iam-oidc-provider \
-            --region ${AWS_REGION} \
-            --cluster ${EKS_CLUSTER_NAME} \
-            --approve
-
-          eksctl create iamserviceaccount \
-            --name ebs-csi-controller-sa \
-            --namespace kube-system \
-            --cluster ${EKS_CLUSTER_NAME} \
-            --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
-            --approve \
-            --region ${AWS_REGION}
-
-          aws eks create-addon \
+          aws eks describe-addon \
             --cluster-name ${EKS_CLUSTER_NAME} \
             --addon-name aws-ebs-csi-driver \
-            --region ${AWS_REGION}
+            --region ${AWS_REGION} \
+            --query addon.status \
+            --output text | tee /tmp/ebs_addon_status.txt
 
-          kubectl get pods -n kube-system | grep -i ebs || true
+          test "$(cat /tmp/ebs_addon_status.txt)" = "ACTIVE"
 
-          exit 0
+          kubectl get pods -n kube-system | grep -i ebs
           '''
         }
       }
@@ -195,7 +200,7 @@ pipeline {
           string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
         ]) {
           sh '''
-          set +e
+          set -eux
 
           helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/ || true
           helm repo update
@@ -204,9 +209,23 @@ pipeline {
             -n kube-system \
             --set args[0]=--kubelet-insecure-tls
 
-          kubectl get pods -n kube-system | grep metrics-server || true
+          kubectl get pods -n kube-system | grep metrics-server
+          '''
+        }
+      }
+    }
 
-          exit 0
+    stage('Validate metrics-server') {
+      when { expression { params.ACTION == 'deploy' } }
+
+      steps {
+        withCredentials([
+          string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+          string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+          sh '''
+          set -eux
+          kubectl top nodes
           '''
         }
       }
@@ -216,7 +235,6 @@ pipeline {
       when { expression { params.ACTION == 'deploy' } }
 
       steps {
-
         sh '''
         set -eux
 
@@ -233,7 +251,6 @@ pipeline {
       when { expression { params.ACTION == 'deploy' } }
 
       steps {
-
         withCredentials([
           string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
           string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
@@ -261,7 +278,6 @@ pipeline {
       when { expression { params.ACTION == 'deploy' } }
 
       steps {
-
         withCredentials([
           string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
           string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
@@ -303,7 +319,6 @@ pipeline {
       when { expression { params.ACTION == 'deploy' } }
 
       steps {
-
         withCredentials([
           string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
           string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
@@ -321,7 +336,7 @@ pipeline {
           kubectl get pods -n ${K8S_NAMESPACE}
           kubectl get svc -n ${K8S_NAMESPACE}
           kubectl get pvc -n ${K8S_NAMESPACE}
-          kubectl get hpa -n ${K8S_NAMESPACE} || true
+          kubectl get hpa -n ${K8S_NAMESPACE}
           '''
         }
       }
@@ -331,7 +346,6 @@ pipeline {
       when { expression { params.ACTION == 'destroy' } }
 
       steps {
-
         withCredentials([
           string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
           string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
@@ -356,19 +370,16 @@ pipeline {
       when { expression { params.ACTION == 'destroy' } }
 
       steps {
-
         withCredentials([
           string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
           string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
         ]) {
 
           dir("${TF_ENV_DIR}") {
-
             sh '''
             set +e
 
             terraform init -reconfigure
-
             terraform destroy -auto-approve
 
             exit 0
@@ -382,7 +393,6 @@ pipeline {
       when { expression { params.ACTION == 'destroy' } }
 
       steps {
-
         withCredentials([
           string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
           string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
@@ -409,11 +419,8 @@ pipeline {
   }
 
   post {
-
     always {
-
       sh 'docker image prune -f || true'
-
       cleanWs()
     }
   }

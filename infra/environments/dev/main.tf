@@ -23,6 +23,21 @@ module "eks" {
   max_size            = var.max_size
 }
 
+
+module "ebs_csi" {
+  source = "../../modules/ebs-csi"
+
+  cluster_name    = module.eks.cluster_name
+  oidc_issuer_url = module.eks.cluster_oidc_issuer_url
+
+  tags = {
+    Project     = "foodfast"
+    Environment = "dev"
+  }
+
+  depends_on = [module.eks]
+}
+
 module "ecr" {
   source       = "../../modules/ecr"
   project_name = var.project_name
