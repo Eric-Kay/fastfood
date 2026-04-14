@@ -15,7 +15,7 @@ pipeline {
 
   environment {
     AWS_REGION = 'us-east-1'
-    AWS_ACCOUNT_ID = '603108265570'
+    AWS_ACCOUNT_ID = '#############'
 
     TF_BUCKET = 'eric-foodfast-terraform-state'
     TF_LOCK_TABLE = 'foodfast-terraform-locks'
